@@ -1,0 +1,12 @@
+streamlit>=1.40
+pandas
+numpy
+plotly
+openpyxl
+feedparser
+requests
+beautifulsoup4
+python-dotenv
+gTTS
+Pillow
+reportlab
