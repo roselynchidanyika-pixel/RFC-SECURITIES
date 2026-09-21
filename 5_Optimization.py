@@ -7,20 +7,21 @@ import sys as _sys
 _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 if os.path.basename(_APP_ROOT) == "pages":
     _APP_ROOT = os.path.dirname(_APP_ROOT)
-for _cand in (_APP_ROOT, os.path.dirname(_APP_ROOT)):
+_APP_UTILS = os.path.join(_APP_ROOT, "utils")
+for _cand in (_APP_UTILS, _APP_ROOT):
     if _cand not in _sys.path:
         _sys.path.insert(0, _cand)
-del _APP_ROOT, _cand
+del _APP_ROOT, _APP_UTILS, _cand
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils.analysis import liquidity, nice
-from utils.ui import page_boot, render_footer, get_bundle
-from utils.sector_advisor import can_do
-from utils.translations import t
+from analysis import liquidity, nice
+from ui import page_boot, render_footer, get_bundle
+from sector_advisor import can_do
+from translations import t
 
 macro = page_boot("RFC Securities - Optimization", "⚙")
 lang = st.session_state["lang"]
@@ -100,7 +101,7 @@ for item in can_do(sector, "diversify")[:2]:
 
 st.markdown("---")
 st.subheader("🤖 Read the graph in plain English")
-from utils.explanation_engine import build, render
+from explanation_engine import build, render
 expl = build(bundle, "optimization", macro)
 render(st, lang, expl, "optimization")
 

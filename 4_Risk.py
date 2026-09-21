@@ -7,19 +7,20 @@ import sys as _sys
 _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 if os.path.basename(_APP_ROOT) == "pages":
     _APP_ROOT = os.path.dirname(_APP_ROOT)
-for _cand in (_APP_ROOT, os.path.dirname(_APP_ROOT)):
+_APP_UTILS = os.path.join(_APP_ROOT, "utils")
+for _cand in (_APP_UTILS, _APP_ROOT):
     if _cand not in _sys.path:
         _sys.path.insert(0, _cand)
-del _APP_ROOT, _cand
+del _APP_ROOT, _APP_UTILS, _cand
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils.analysis import nice
-from utils.ui import page_boot, render_footer, get_bundle
-from utils.translations import t
+from analysis import nice
+from ui import page_boot, render_footer, get_bundle
+from translations import t
 
 macro = page_boot("RFC Securities - Risk & Stress Testing", "⛈")
 lang = st.session_state["lang"]
@@ -81,7 +82,7 @@ st.metric("Latest month profit under double hit", nice(final_double),
 
 st.markdown("---")
 st.markdown("### 🧠 Why this matters in Zimbabwe")
-from utils.sector_advisor import macro_context_line
+from sector_advisor import macro_context_line
 st.markdown(macro_context_line(sector, macro))
 st.markdown("""
 **What to watch each week:** exchange rate, fuel price, RBZ interest rate and policy announcements,
@@ -91,7 +92,7 @@ your cost line or your customer's wallet.
 
 st.markdown("---")
 st.subheader("🤖 Read the graph in plain English")
-from utils.explanation_engine import build, render
+from explanation_engine import build, render
 expl = build(bundle, "risk", macro)
 render(st, lang, expl, "risk")
 

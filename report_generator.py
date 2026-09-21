@@ -13,8 +13,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from utils.analysis import fmt_money, growth, nice, pct, trend
-from utils.sector_advisor import can_do, macro_context_line
+from analysis import fmt_money, growth, nice, pct, trend
+from sector_advisor import can_do, macro_context_line
 
 
 def _report_lines(bundle, econ, news_summary: str, period: str) -> list:

@@ -10,8 +10,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils.assets_gen import ensure_assets, sparkline_svg
-from utils.translations import t
+from assets_gen import ensure_assets, sparkline_svg
+from translations import t
 
 GREEN = "#0B3D2E"
 GOLD = "#C9A227"
@@ -249,7 +249,7 @@ def render_global_sidebar():
         f'<div style="font-size:.8rem; color:var(--rfc-cream); margin-bottom:10px;">'
         f'{t(lang,"sidebar_upload_hint")}</div>', unsafe_allow_html=True)
 
-    from utils.data_loader import demo_sectors, load_demo, load_uploaded
+    from data_loader import demo_sectors, load_demo, load_uploaded
     upload = st.sidebar.file_uploader(
         t(lang, "sidebar_upload"), type=["xlsx", "xls", "csv"],
         help=t(lang, "sidebar_upload_hint"))
@@ -324,7 +324,7 @@ def render_global_sidebar():
 
 
 def _generate_report():
-    from utils.report_generator import build_report, report_pdf
+    from report_generator import build_report, report_pdf
     bundle = get_bundle()
     if bundle is None:
         st.sidebar.warning("No data loaded.")
@@ -351,7 +351,7 @@ def render_report_view():
 
 def _send_whatsapp():
     from urllib.parse import quote
-    from utils.report_generator import build_report, whatsapp_text
+    from report_generator import build_report, whatsapp_text
     bundle = get_bundle()
     if bundle is None:
         st.sidebar.warning("No data loaded.")
@@ -367,7 +367,7 @@ def _send_whatsapp():
 
 def _send_gmail():
     from urllib.parse import quote
-    from utils.report_generator import build_report, gmail_body
+    from report_generator import build_report, gmail_body
     bundle = get_bundle()
     if bundle is None:
         st.sidebar.warning("No data loaded.")
@@ -385,7 +385,7 @@ def _send_gmail():
 # ----------------------------------------------------------------------------
 @st.cache_data(ttl=180, show_spinner=False)
 def _load_macro_cached(offline: bool) -> dict:
-    from utils.fx_ticker import fetch_macro
+    from fx_ticker import fetch_macro
     try:
         return fetch_macro(offline_sample=offline)
     except Exception:
@@ -403,7 +403,7 @@ def _load_macro() -> dict:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _load_news(sector_filter: str) -> dict:
-    from utils.news_tracker import fetch_news
+    from news_tracker import fetch_news
     if sector_filter == "All sectors":
         sector_filter = None
     try:
@@ -417,7 +417,7 @@ def _load_news(sector_filter: str) -> dict:
 # Ticker + footer
 # ----------------------------------------------------------------------------
 def render_ticker(macro: dict):
-    from utils.fx_ticker import ticker_items
+    from fx_ticker import ticker_items
     now = datetime.now().strftime("%H:%M:%S")
     sample = macro.get("sample")
     src_note = "OFFLINE SAMPLE MODE - rates are not live" if sample else "Live sources: er-api, gold-api, ZERA, RBZ* where reachable"
@@ -519,7 +519,7 @@ def render_chart_block(st_ctl, title: str, fig: go.Figure, expl: dict, key: str,
                           font=dict(color="#F2EDE4"), margin=dict(l=20, r=20, t=40, b=20))
         st_ctl.plotly_chart(fig, width="stretch", key=f"fig_{key}")
     with st_ctl.expander("🤖 EXPLAIN THIS", expanded=False):
-        from utils.explanation_engine import render
+        from explanation_engine import render
         render(st_ctl, st.session_state.get("lang", "en"), expl, key_prefix=key)
 
 

@@ -77,13 +77,32 @@ Open http://localhost:8501 and log in with any username/password.
 
 ### If you hit `ModuleNotFoundError` on deploy (redacted error)
 
-This usually means the `utils` package was not importable on the server. Check, in this order:
+The app now imports its own modules by plain name (the app root **and** the
+`utils/` folder are placed directly on `sys.path` at boot, so Python's package
+resolution of `utils` is never relied on). A remaining `ModuleNotFoundError`
+therefore almost always means the deployed copy is **missing the `utils/`
+folder or is an old build**. Check, in this order:
 
-1. **`utils/__init__.py` exists and was committed.** Without it (or if your gitignore dropped it), `from utils... import ...` fails with exactly this error.
-2. **Your imports live in a `utils` folder** inside the repo root (Streamlit boot runs from the repo root, and the code already injects the root onto `sys.path` before any import).
-3. **`requirements.txt` installed cleanly** — in Cloud → *Settings → Packages*, confirm streamlit/pandas/plotly/feedparser/openpyxl/gTTS/reportlab succeeded. `pip install -r requirements.txt` locally is a good pre-check.
-4. **Python version**: the code is compatible with 3.9+; no special `runtime.txt` needed. If you set one, use `3.10` or newer.
-5. If the error persists, **stop + restart the app**, click **Manage app → Logs**, and look past the redacted banner at the *first* frame of the traceback — that line names the exact module that was missing.
+1. **Does the GitHub repo actually contain `utils/` with the `.py` files?**
+   In GitHub, open the repo and confirm you see `utils/ui.py`,
+   `utils/translations.py`, `pages/1_Profitability.py`, `.streamlit/config.toml`
+   next to `app.py`. If they are not there, commit them and push again.
+2. **Did Streamlit Cloud pick up the newest commit?** On the app page click
+   **Manage app → Rebuild** (or redeploy the branch) so Cloud runs the latest
+   code — an old build replays the old error.
+3. **Did `requirements.txt` install cleanly?** Cloud → *Settings → Packages*
+   should list streamlit, pandas, plotly, openpyxl, feedparser, requests,
+   beautifulsoup4, python-dotenv, gTTS, Pillow, reportlab with no failures.
+4. **Python version**: the code needs Python 3.9 or newer (uses
+   `str | None` style annotations, which the app handles on older versions via
+   `from __future__ import annotations`). No `runtime.txt` needed.
+5. If it still fails, click **Manage app → Logs** and look at the **first**
+   frame of the traceback past the redacted banner — that line names the exact
+   module that was not found.
+
+As a last resort there is a built-in guard: if the `utils/` files genuinely are
+absent from the deployment, the app now shows a clear on-screen message telling
+you exactly which folder is missing, instead of a raw error page.
 
 ---
 

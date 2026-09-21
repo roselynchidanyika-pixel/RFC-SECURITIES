@@ -9,18 +9,22 @@ Always shows live FX ticker, footer, and the global sidebar.
 """
 from __future__ import annotations
 
-# --- path bootstrap: makes `utils` importable regardless of where the app is
-# placed or run from (local, Streamlit Cloud, subfolder, root, etc.) ----------
+# --- path bootstrap: makes our modules importable (plain names) regardless of
+# where the app is placed or run from (local, Streamlit Cloud, subfolder, ...).
+# Both the app root and the `utils/` folder are put on sys.path, so the app
+# works even if Python package resolution of `utils` is shadowed or the folder
+# was extracted flat. ----------------------------------------------------------
 import os
 import sys as _sys
 
 _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 if os.path.basename(_APP_ROOT) == "pages":
     _APP_ROOT = os.path.dirname(_APP_ROOT)
-for _cand in (_APP_ROOT, os.path.dirname(_APP_ROOT)):
+_APP_UTILS = os.path.join(_APP_ROOT, "utils")
+for _cand in (_APP_UTILS, _APP_ROOT):
     if _cand not in _sys.path:
         _sys.path.insert(0, _cand)
-del _APP_ROOT, _cand
+del _APP_ROOT, _APP_UTILS, _cand
 
 try:
     from dotenv import load_dotenv
@@ -33,10 +37,21 @@ import streamlit as st
 st.set_page_config(page_title="RFC Securities", page_icon="📈",
                    layout="wide", initial_sidebar_state="expanded")
 
-from utils.translations import t
-from utils.ui import (inject_css, page_guard, render_carousel, render_footer,
-                      render_global_sidebar, render_login, render_report_view,
-                      render_ticker, get_bundle, _load_macro, welcome_audio_html)
+try:
+    from translations import t
+    from ui import (inject_css, page_guard, render_carousel, render_footer,
+                    render_global_sidebar, render_login, render_report_view,
+                    render_ticker, get_bundle, _load_macro, welcome_audio_html)
+except ModuleNotFoundError as _e:
+    st.error(
+        "❌ Could not import the app's modules. The `utils/` folder (with files "
+        f"like `ui.py`, `translations.py`) was not found next to app.py. Reason: {_e}")
+    st.markdown(
+        "**Fix on Streamlit Cloud / your deployment:** make sure the repository contains "
+        "the three folders `pages/`, `utils/` and `.streamlit/` beside `app.py`, commit "
+        "them (do **not** gitignore them), then redeploy. If you uploaded files one by one, "
+        "upload the `utils/` folder contents as well.")
+    st.stop()
 
 inject_css()
 lang = st.session_state.get("lang", "en")
@@ -138,7 +153,7 @@ else:
 
     m = bundle["monthly"]
     last, prev = m.iloc[-1], (m.iloc[-2] if len(m) > 1 else m.iloc[-1])
-    from utils.analysis import growth, nice
+    from analysis import growth, nice
 
     d1, d2, d3 = st.columns(3)
     d1.metric(t(lang, "metric_revenue"), nice(last["revenue"]),
@@ -176,7 +191,7 @@ else:
 st.markdown("---")
 st.subheader("📰 LIVE ZIMBABWE BUSINESS & POLICY NEWS")
 sector_filter = st.session_state.get("sector_filter", "All sectors")
-from utils.ui import _load_news
+from ui import _load_news
 news = _load_news(sector_filter)
 if news.get("live"):
     st.caption(f"LIVE • Last checked: {news['last_checked']} • Sources checked: "

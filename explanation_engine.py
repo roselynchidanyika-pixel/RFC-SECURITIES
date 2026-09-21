@@ -6,10 +6,10 @@ and a cause-and-effect chain. Never a decorative graph.
 """
 from __future__ import annotations
 
-from utils.analysis import (consecutive_dir, fmt_money, growth, liquidity,
+from analysis import (consecutive_dir, fmt_money, growth, liquidity,
                             nice, pct, trend)
-from utils.sector_advisor import can_do, macro_context_line
-from utils.translations import t
+from sector_advisor import can_do, macro_context_line
+from translations import t
 
 
 def _to_money(v) -> str:
