@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local secrets only (keep .env.example and .streamlit/config.toml committed)
+.env
+.streamlit/secrets.toml

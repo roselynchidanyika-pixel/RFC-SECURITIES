@@ -9,6 +9,19 @@ Always shows live FX ticker, footer, and the global sidebar.
 """
 from __future__ import annotations
 
+# --- path bootstrap: makes `utils` importable regardless of where the app is
+# placed or run from (local, Streamlit Cloud, subfolder, root, etc.) ----------
+import os
+import sys as _sys
+
+_APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+if os.path.basename(_APP_ROOT) == "pages":
+    _APP_ROOT = os.path.dirname(_APP_ROOT)
+for _cand in (_APP_ROOT, os.path.dirname(_APP_ROOT)):
+    if _cand not in _sys.path:
+        _sys.path.insert(0, _cand)
+del _APP_ROOT, _cand
+
 try:
     from dotenv import load_dotenv
     load_dotenv()

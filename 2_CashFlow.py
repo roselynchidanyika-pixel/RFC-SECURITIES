@@ -1,6 +1,17 @@
 """RFC Securities - Pillar 2: Cash Flow. The financial lifeblood."""
 from __future__ import annotations
 
+import os
+import sys as _sys
+
+_APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+if os.path.basename(_APP_ROOT) == "pages":
+    _APP_ROOT = os.path.dirname(_APP_ROOT)
+for _cand in (_APP_ROOT, os.path.dirname(_APP_ROOT)):
+    if _cand not in _sys.path:
+        _sys.path.insert(0, _cand)
+del _APP_ROOT, _cand
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
