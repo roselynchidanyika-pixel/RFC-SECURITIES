@@ -1,193 +1,145 @@
-"""Simple Business Management Report - Mavuno Foods template.
+"""Simple Business Management Report (Mavuno Foods-style, dynamic).
 
-Generates the structured report in Markdown, a downloadable PDF (reportlab),
-and ready-to-send messages for WhatsApp and Gmail.
+generate_simple_report(business_data, sector, news) returns:
+  { lines, text, html, pdf_bytes, summary_kpis, business_name, period }
+
+The template is fixed but every figure is computed from the loaded data;
+market lines pull from the live news tracker. Advice uses guarded language
+("potentially viable", "under assumptions", "requires validation",
+"market evidence indicates") - RFC never guarantees profit.
 """
 from __future__ import annotations
 
-import io
 from datetime import datetime
 
-import pandas as pd
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
-
-from analysis import fmt_money, growth, nice, pct, trend
-from sector_advisor import can_do, macro_context_line
+from analysis import growth, liquidity, trend
+from simple_pdf import pdf_from_lines
+from sector_advisor import get_sector_advice
 
 
-def _report_lines(bundle, econ, news_summary: str, period: str) -> list:
-    m = bundle["monthly"]
-    b = bundle["business"]
-    sector = b.sector
-    last = m.iloc[-1]
-    prev = m.iloc[-2] if len(m) > 1 else last
-    up = lambda v: "↑" if v >= 0 else "↓"  # noqa
-
-    rev_d = growth(m, "revenue", 2)
-    prof_d = growth(m, "profit", 2)
-    cash_d = growth(m, "cash_balance", 2)
-    inv_d = growth(m, "inventory", 2)
-
-    L = []
-    L.append("SIMPLE BUSINESS MANAGEMENT REPORT")
-    L.append("")
-    L.append(f"Business: {b.name}")
-    L.append(f"Period: {period}")
-    L.append("")
-    L.append("🟢 YOUR BUSINESS TODAY")
-    L.append(f"Sales: {nice(last['revenue'])} {up(rev_d)}")
-    L.append(f"Profit: {nice(last['profit'])} {up(prof_d)}")
-    L.append(f"Cash: {nice(last['cash_balance'])} {up(cash_d)}")
-    L.append(f"Stock: {nice(last['inventory'])} {up(inv_d)}")
-    L.append("")
-    L.append("🔎 WHAT IS HAPPENING?")
-    rev_t, prof_t = trend(m["revenue"]), trend(m["profit"])
-    if prof_t == "falling" and rev_t == "rising":
-        L.append("You are selling more, but keeping less profit. Costs are rising faster than sales.")
-    elif prof_t == "falling":
-        L.append("Your profit is under pressure. Check whether prices kept up with costs.")
-    else:
-        L.append("Your profit is holding. Protect it by watching costs and repricing when inflation moves.")
-    L.append("")
-    L.append("🇿🇼 WHAT IS HAPPENING AROUND YOU?")
-    L.append(macro_context_line(sector, econ))
-    L.append(news_summary or "No verifiable live news was available at report time.")
-    L.append("")
-    L.append("⚠ WHAT DOES THIS MEAN FOR YOU?")
-    L.append("You should not depend on one place, one product or one way of selling.")
-    L.append("Consider:")
-    for bullet in can_do(sector, "diversify"):
-        L.append(f"- {bullet}")
-    L.append("")
-    L.append("💰 PROTECT YOUR PROFIT")
-    L.append("Before increasing sales, make sure each sale is still profitable.")
-    L.append("Check: Selling price → Cost → Profit. If costs rise and price stays the same, profit shrinks.")
-    L.append("")
-    L.append("💵 PROTECT YOUR CASH")
-    L.append(f"Your stock has {inv_d:+.1f}% vs cash {cash_d:+.1f}%. Check which products sell quickly and which sit on the shelf.")
-    L.append("Avoid putting too much cash into slow-moving stock.")
-    L.append("")
-    L.append("🚨 RFC'S MAIN WARNING")
-    L.append(_warning(bundle, econ, sector))
-    L.append("")
-    L.append("✅ WHAT TO DO NOW")
-    for i, s in enumerate([
-        "Review your prices.",
-        "Reduce slow-moving stock.",
-        "Protect your cash.",
-        "Diversify where and how you sell.",
-        "Monitor Zimbabwe economic and business news.",
-        "Check every new regulation to see whether it affects your business.",
-    ], 1):
-        L.append(f"{i}. {s}")
-    L.append("")
-    L.append("🤖 RFC'S MESSAGE TO THE OWNER")
-    L.append(_owner_message(bundle))
-    L.append("")
-    L.append("📌 NEXT RFC CHECK")
-    L.append(f"Sales: {'Monitor' if abs(rev_d) > 10 else 'Watch closely'}")
-    L.append(f"Profit: {'Watch closely' if prof_t == 'falling' else 'Monitor'}")
-    L.append(f"Cash: {'Watch closely' if cash_d < -10 else 'Monitor'}")
-    L.append(f"Stock: {'Review' if inv_d > 15 else 'Monitor'}")
-    L.append("External news: Monitor")
-    L.append("Business diversification: Recommended for consideration")
-    L.append("")
-    L.append("RFC SECURITIES")
-    L.append("EXPLAIN. ANALYSE. PREDICT. STRESS-TEST.")
-    L.append("Simple language. Clear business actions. Decisions remain with management.")
-    return L
+def _signed(v: float) -> str:
+    return f"↑ {v:,.0f}" if v > 0 else (f"↓ {abs(v):,.0f}" if v < 0 else "→ flat")
 
 
-def _warning(bundle, econ, sector) -> str:
-    m = bundle["monthly"]
+def _kfmt(v: float) -> str:
+    if abs(v) >= 1000:
+        return f"${v/1000:.1f}k"
+    return f"${v:,.0f}"
+
+
+def generate_simple_report(business_data: dict, sector: str, news: dict) -> dict:
+    m = business_data["monthly"]
+    bname = business_data.get("name") or "Mavuno Foods"
+    period = datetime.now().strftime("%B %Y")
+
+    sales = float(m["revenue"].sum())
+    profit = float(m["profit"].iloc[-1])
+    cash = float(m["cash_balance"].iloc[-1])
+    stock = float(m["inventory"].iloc[-1])
+    rev_g = growth(m, "revenue")
+    prof_g = growth(m, "profit")
     cash_t = trend(m["cash_balance"])
     stock_t = trend(m["inventory"])
-    bits = []
-    if cash_t == "falling":
-        bits.append("your cash balance is falling while inflation keeps prices moving")
+
+    summary = {
+        "sales": sales, "profit": profit, "cash": cash, "stock": stock,
+        "sales_arrow": "↑" if rev_g > 0 else "↓", "profit_arrow": "↑" if prof_g >= 0 else "↓",
+        "cash_arrow": "↑" if cash_t == "rising" else "↓", "stock_arrow": "↑" if stock_t == "rising" else "↓",
+    }
+
+    advice = get_sector_advice(business_data.get("sector") or sector)
+
+    lines: list = []
+    lines.append("#TITLE SIMPLE BUSINESS MANAGEMENT REPORT")
+    lines.append(f"Business: {bname}")
+    lines.append(f"Period: {period}")
+    lines.append("_" * 50)
+    lines.append("#H 1. YOUR BUSINESS TODAY")
+    lines.append(f"Sales {_kfmt(sales)} {summary['sales_arrow']}   Profit {_kfmt(profit)} {summary['profit_arrow']}   Cash {_kfmt(cash)} {summary['cash_arrow']}   Stock {_kfmt(stock)} {summary['stock_arrow']}")
+    lines.append("_" * 50)
+    lines.append("#H 2. WHAT IS HAPPENING")
+    if prof_g < 0:
+        lines.append(f"Profit moved {prof_g:+.1f}% over the year while revenue moved {rev_g:+.1f}% - costs are outrunning prices, compressing margin.")
+    elif rev_g > 0:
+        lines.append(f"Revenue grew {rev_g:+.1f}% and profit moved {prof_g:+.1f}%. The question is whether growth converts into cash.")
+    else:
+        lines.append(f"Revenue is flat over the year ({rev_g:+.1f}%) - growth needs a driver, not hope.")
     if stock_t == "rising":
-        bits.append("your stock is growing while cash is not - cash is being locked on shelves")
-    if not bits:
-        bits.append("costs tend to rise faster than prices during this period - margin watch is essential")
-    warn = "Your biggest near-term risk: " + " and ".join(bits) + "."
-    if econ and econ.get("inflation") is not None:
-        warn += f" At ~{econ['inflation']:.1f}% inflation, delaying price and stock decisions costs real money each month."
-    return warn
+        lines.append(f"Stock is rising ({_kfmt(stock)} closing) while cash is {cash_t} - the classic sign cash is being converted into slow inventory.")
+    lines.append("_" * 50)
+    lines.append("#H 3. WHAT IS HAPPENING AROUND YOU (LIVE)")
+    new_items = (news or {}).get("items", [])
+    if new_items:
+        for it in new_items[:4]:
+            lines.append(f"- {it['headline']} ({it['source']}, {it['date'] or 'recent'}). {it['means']}")
+    else:
+        lines.append("- Live feeds unavailable at report time; re-run with internet to refresh market context.")
+    lines.append("_" * 50)
+    lines.append("#H 4. WHAT DOES THIS MEAN FOR YOU")
+    for b in advice["report_example"]:
+        lines.append(f"- {b}")
+    lines.append(f"- {advice['macro_line']}")
+    lines.append("_" * 50)
+    lines.append("#H 5. PROTECT YOUR PROFIT")
+    lines.append("- Check the chain on every line: Selling price -> Cost -> Profit. Reprice before margin erodes.")
+    lines.append("#H 6. PROTECT YOUR CASH")
+    lines.append("- Avoid slow-moving stock: discount it, special-order it, or stop reordering it.")
+    lines.append("_" * 50)
+    lines.append("#H 7. RFC'S MAIN WARNING")
+    lines.append(_warning(m, profit, cash, prof_g))
+    lines.append("_" * 50)
+    lines.append("#H 8. WHAT TO DO NOW")
+    todo = [
+        f"1. Reprice your lowest-margin lines; test a small increment on bestsellers (advice is 'potentially viable' - validate against the market).",
+        "2. Discount or clear slow-moving stock this week to free cash.",
+        "3. Set a daily cash deposit routine and negotiate supplier terms.",
+        "4. Prepare for the festive-season peak: stock up before demand spikes.",
+        "5. Track fuel, FX and inflation headlines weekly in this dashboard.",
+        "6. Book the next RFC check to measure what changed.",
+    ]
+    for tline in todo:
+        lines.append(tline)
+    lines.append("_" * 50)
+    lines.append("#H 9. RFC'S MESSAGE TO THE OWNER")
+    lines.append(f"{bname}, the business is generating activity but the pattern that matters is margin and cash conversion. If {_kfmt(stock)} of stock is turning slowly, cash will stay tight even while sales look fine. Protect margin per sale and make stock work faster; that is where improvement is most reliable, under your current data.")
+    lines.append("_" * 50)
+    lines.append("#H 10. NEXT RFC CHECK")
+    lines.append("- Sales Monitor: next month revenue vs this month")
+    lines.append("- Profit Watch: margin % on your top five lines")
+    lines.append("- Cash Position: closing balance and stock days")
+    lines.append("_" * 50)
+    lines.append("RFC SECURITIES - EXPLAIN ANALYSE PREDICT STRESS-TEST")
 
-
-def _owner_message(bundle) -> str:
-    m = bundle["monthly"]
-    b = bundle["business"]
-    prof_final = m["profit"].iloc[-1]
-    if prof_final > 0:
-        return (f"{b.name} is currently making a profit, which is your foundation. The fight is to keep "
-                "that profit growing faster than inflation. Protect cash, keep margins healthy, and only "
-                "expand into what the data shows is working.")
-    return (f"{b.name} is under profit pressure. This is not the end - it is a signal to reprice, cut "
-            "slow-moving stock and protect cash before funding growth. Small, data-backed steps restore "
-            "profitability faster than big, hopeful ones.")
-
-
-def build_report(bundle, econ, news, period: str | None = None, lang: str = "en"):
-    period = period or datetime.now().strftime("%B %Y")
-    ns = ""
-    if news and news.get("items"):
-        ns = f"Recent news that may matter to you: {news['items'][0]['headline']} ({news['items'][0]['source']})."
-    lines = _report_lines(bundle, econ, ns, period)
+    pdf_bytes = pdf_from_lines(lines, title="RFC Securities - Simple Management Report")
+    text = "\n".join(lines).replace("#TITLE ", "").replace("#H ", "").replace("_" * 50, "")
+    html_parts = []
+    for x in lines:
+        if x.startswith("#TITLE "):
+            html_parts.append(f"<h2 style='color:#C9A227'>{_html_escape(x[7:])}</h2>")
+        elif x.startswith("#H "):
+            html_parts.append(f"<h4 style='color:#C9A227'>{_html_escape(x[3:])}</h4>")
+        else:
+            html_parts.append(f"<p style='margin:3px 0'>{_html_escape(x)}</p>")
+    html = (
+        "<div style='background:#0B3D2E;color:#E8E4D8;padding:18px;border-radius:12px;font-family:sans-serif'>"
+        + "".join(html_parts) + "</div>"
+    )
     return {
-        "text": "\n".join(lines),
-        "period": period,
-        "lines": lines,
+        "lines": lines, "text": text, "html": html,
+        "pdf_bytes": pdf_bytes, "summary": summary,
+        "business_name": bname, "period": period,
+        "advice": advice,
     }
 
 
-def report_markdown(report) -> str:
-    return report["text"]
+def _html_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def report_pdf(report) -> bytes:
-    """Render the report to a PDF using reportlab."""
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
-    c.setFillColorRGB(0.043, 0.239, 0.18)
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(25 * mm, h - 25 * mm, "RFC SECURITIES - Simple Business Report")
-    c.setFillColorRGB(0.13, 0.13, 0.13)
-    y = h - 45 * mm
-    c.setFont("Helvetica", 9.5)
-    for line in report["lines"]:
-        if y < 22 * mm:
-            c.showPage()
-            y = h - 22 * mm
-            c.setFont("Helvetica", 9.5)
-            c.setFillColorRGB(0.13, 0.13, 0.13)
-        text = line[:118]
-        if line.startswith(("SIMPLE", "RFC SECURITIES")):
-            continue
-        if line.strip().startswith(("🟢", "🔎", "🇿🇼", "⚠", "💰", "💵", "🚨", "✅", "🤖", "📌")) \
-                or line in ("WHAT IS HAPPENING AROUND YOU?",):
-            c.setFont("Helvetica-Bold", 10.5)
-            c.setFillColorRGB(0.04, 0.24, 0.18)
-        elif line.strip().startswith(("Business:", "Period:")):
-            c.setFont("Helvetica-Bold", 10)
-            c.setFillColorRGB(0.5, 0.44, 0.1)
-        else:
-            c.setFont("Helvetica", 9.5)
-            c.setFillColorRGB(0.13, 0.13, 0.13)
-        c.drawString(25 * mm, y, text)
-        y -= 6.2 * mm
-    c.showPage()
-    c.save()
-    return buf.getvalue()
-
-
-def whatsapp_text(report) -> str:
-    body = report["text"][:1800].replace("\n\n", "\n")
-    return body
-
-
-def gmail_body(report) -> str:
-    return report["text"]
+def _warning(m, profit, cash, prof_g) -> str:
+    if prof_g >= 0 and trend(m["cash_balance"]) != "falling":
+        return f"Sales are holding, but the real risk is stock: with {m['inventory'].iloc[-1]:,.0f} in inventory, a demand dip turns inventory into locked cash. Do not buy stock on hope - buy against evidence."
+    if cash <= 0:
+        return "CASH IS THE PRIORITY: the modelled closing cash balance is at or below zero. Stop new stock purchases until cash cover is restored."
+    return (f"Costs are moving faster than prices (profit {prof_g:+.1f}%). The single most reliable action is defending margin: "
+            f"reprice low-margin lines and clear slow stock before prices move again.")

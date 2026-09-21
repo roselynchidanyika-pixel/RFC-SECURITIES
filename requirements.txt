@@ -1,12 +1,9 @@
-streamlit>=1.40
+streamlit
 pandas
-numpy
 plotly
 openpyxl
 feedparser
 requests
 beautifulsoup4
 python-dotenv
-gTTS
-Pillow
-reportlab
+numpy

@@ -1,208 +1,277 @@
 """The AI Explanation Engine.
 
-Every chart in RFC is read and explained in plain professional English, tied
-to the Zimbabwe economy, with sector-specific actions, before/after numbers
-and a cause-and-effect chain. Never a decorative graph.
+Every chart is read and explained in clear, professional English, tied to the
+Zimbabwe economy, with sector-specific actions, a before/after example and a
+cause-and-effect chain.
+
+generate_explanation(graph_type, data, sector, econ_data) returns a dict:
+  what, changed, trend, why, affect, investigate, can_do,
+  before_after, chain, macro, speak
+Also provides render(...) to display it and speak_text(...) for TTS.
+
+NOTE: numbers disclosed come from the loaded/modeled data; we never present an
+assumption as fact, and we never guarantee profit (advice is phrased as
+"potentially viable", "under assumptions", "requires validation",
+"market evidence indicates").
 """
 from __future__ import annotations
 
-from analysis import (consecutive_dir, fmt_money, growth, liquidity,
-                            nice, pct, trend)
+import pandas as pd
+
+from analysis import consecutive_dir, forecast, growth, liquidity, pct, trend
 from sector_advisor import can_do, macro_context_line
-from translations import t
 
 
-def _to_money(v) -> str:
-    return fmt_money(float(v))
+def _fm(v) -> str:
+    return f"${v:,.2f}"
 
 
-def _chain_text(sector: str) -> list:
+def _num(v) -> str:
+    return f"{v:,.0f}"
+
+
+def _chain(sector: str) -> str:
     chains = {
-        "Transport": ["Fuel price ↑ → Cost per trip ↑ → Profit margin per trip ↓ → If you do not adjust fares, your daily profit shrinks.",
-                      "Exchange rate ↑ → Spares and vehicle prices ↑ → Maintenance budget ↑ → Less cash left for the owner."],
-        "Agriculture": ["Inflation ↑ → Fertiliser and feed prices ↑ → Input costs ↑ → Less margin per tonne unless farm-gate prices rise with them.",
-                        "Rainfall ↓ → Yield ↓ → Less volume to sell → Same fixed costs → Profit margin ↓."],
-        "Gadgets": ["Exchange rate ↑ → Imported gadgets cost more → Your cost price ↑ → If selling price lags, margin ↓ → Slow stock becomes expensive stock.",
-                    "Duty/IMEI rule ↑ → Red tape ↑ → More time and cost per unit → Pressure on gross margin."],
-        "Grocery": ["Inflation ↑ → Supplier prices ↑ → Your cost price ↑ → Selling price ↑ → Price-sensitive customers buy less → Volume ↓ → Revenue pressure.",
-                    "Supermarket promotion ↓ → Your foot traffic ↓ → Volume ↓ → You hold more stock → Cash ↓."],
-        "Restaurant": ["Food cost ↑ → Cost per plate ↑ → If menu price stays the same → Margin per plate ↓.",
-                       "Customer spending power ↓ (inflation) → Covers ↓ → Fixed rent still due → Profit ↓."],
-        "Clothing": ["FX ↑ → Imported garments cost more → Cost price ↑ → Margin ↓ unless price adjusts.",
-                     "School term start → Uniform demand ↑ → Stock out risk → Missed sales."],
-        "Poultry": ["Feed price ↑ → Cost per bird ↑ → Margin per bird ↓ → Timing of sale matters more.",
-                    "Disease scare ↑ → Demand in market ↓ → Prices ↓ → Hold birds longer → More feed cost."],
-        "Beauty": ["FX ↑ → Hair products cost more → Cost of service ↑ → Client pays more → Fewer clients if budget tight.",
-                   "Discretionary income ↓ → Clients trade down → Average spend ↓."],
-        "Hardware": ["Cement producers raise price (inflation) → Your cost ↑ → Gross margin ↓.",
-                     "Construction slow-down → Big orders ↓ → Fixed costs still due → Cash pressure."],
-        "General": ["Inflation ↑ → All input costs ↑ → Selling prices ↑ → Customer demand ↓ → Volume ↓ → Revenue pressure → Profit margin ↓.",
-                    "FX ↑ → Imported inputs cost more → Cost price ↑ → Margin ↓ unless you reprice."],
+        "Transport": "Inflation ↑ → Fuel price ↑ → Cost per trip ↑ → If fares do not adjust → Profit margin per trip ↓ → Less cash for the owner.",
+        "Agriculture": "Inflation ↑ → Fertiliser and seed prices ↑ → Input costs ↑ → Margin per tonne ↓ unless farm-gate prices move with them.",
+        "Gadgets": "Exchange rate ↑ → Imported devices cost more → Cost price ↑ → If selling price lags → Margin ↓ → Slow stock becomes expensive stock.",
+        "Grocery": "Inflation ↑ → Supplier prices ↑ → Selling prices ↑ → Price-sensitive customers buy less → Volume ↓ → Revenue pressure → Profit margin ↓.",
+        "Restaurant": "Food cost ↑ → Cost per plate ↑ → If the menu price stays flat → Margin per plate ↓.",
+        "Clothing": "FX ↑ → Imported garments cost more → Cost price ↑ → Margin ↓ unless you reprice.",
+        "Poultry": "Feed price ↑ → Cost per bird ↑ → Margin per bird ↓ → Sale timing matters more.",
+        "Beauty": "FX ↑ → Hair products cost more → Service cost ↑ → If clients' budgets stay tight → Fewer visits → Revenue ↓.",
+        "Hardware": "Inflation ↑ → Cement and inputs ↑ → Cost ↑ → Gross margin ↓ unless tenders reprice.",
+        "General": "Inflation ↑ → Supplier costs ↑ → Selling prices ↑ → Customer demand ↓ → Sales volume ↓ → Revenue pressure ↓ → Profit margin ↓.",
     }
     return chains.get(sector, chains["General"])
 
 
-def build(bundle, pillar: str, econ: dict) -> dict:
-    """Generate the full explanation dict for a pillar."""
-    monthly = bundle["monthly"]
-    products = bundle["products"]
-    b = bundle["business"]
-    sector = b.sector
+def generate_explanation(graph_type: str, data: dict, sector: str, econ_data: dict = None) -> dict:
+    """Full explanation dict for one pillar (graph)."""
+    monthly: pd.DataFrame = data["monthly"]
+    products: pd.DataFrame = data["products"]
+    b = data["business"]
+    sector = b.sector or sector
     m = monthly
-    rev0, rev1 = m["revenue"].iloc[0], m["revenue"].iloc[-1]
-    cost0, cost1 = m["costs"].iloc[0], m["costs"].iloc[-1]
-    prof0, prof1 = m["profit"].iloc[0], m["profit"].iloc[-1]
+    econ_data = econ_data or {}
+
+    rev, costs, profit = m["revenue"], m["costs"], m["profit"]
+    rev0, rev1 = rev.iloc[0], rev.iloc[-1]
+    cost0, cost1 = costs.iloc[0], costs.iloc[-1]
+    prof0, prof1 = profit.iloc[0], profit.iloc[-1]
     cash = liquidity(m)
-    g = growth(m)
+    g_rev = growth(m, "revenue")
+    g_prof = growth(m, "profit")
+    margin0 = (rev0 - cost0) / rev0 * 100 if rev0 else 0
+    margin1 = (rev1 - cost1) / rev1 * 100 if rev1 else 0
+    liq = liquidity(m)
 
-    base = {
+    expl = {
+        "what": _what(graph_type, m, margin1),
+        "changed": _changed(graph_type, m, rev0, rev1, cost0, cost1, prof0, prof1, margin0, margin1, liq),
+        "trend": _trend(graph_type, m, g_rev, g_prof, margin1),
+        "why": _why(graph_type, m, sector, econ_data, products),
+        "affect": _affect(graph_type, m, sector, products, prof1, liq),
+        "investigate": _investigate(graph_type, m, products),
+        "can_do": can_do(sector, _dimension(graph_type)),
+        "before_after": _before_after(graph_type, m, prof1),
+        "chain": _chain(sector),
+        "macro": macro_context_line(sector, econ_data or None),
+        "graph_type": graph_type,
         "sector": sector,
-        "chain": _chain_text(sector),
-        "macro": macro_context_line(sector, econ),
-        "inflation": (econ or {}).get("inflation"),
     }
-
-    if pillar == "profitability":
-        margin0 = (rev0 - cost0) / rev0 * 100 if rev0 else 0
-        margin1 = (rev1 - cost1) / rev1 * 100 if rev1 else 0
-        margin_trend = trend(m["profit"])
-        rev_dir = consecutive_dir(m["revenue"])
-        base.update({
-            "title": "Profitability: Revenue, Costs and Profit",
-            "what": "This chart shows your monthly sales (revenue) against what it costs to run the business, and the profit that remains. The donut shows how many cents of every dollar stay as profit.",
-            "changed": f"Revenue changed from {nice(rev0)} to {nice(rev1)} ({pct(g)}). Costs changed from {nice(cost0)} to {nice(cost1)}. Profit changed from {nice(prof0)} to {nice(prof1)}.",
-            "margin": f"Profit margin moved from {margin0:.1f}% to {margin1:.1f}%. Gross margin is the key number a lender or investor will ask about.",
-            "trend": f"Profit has been {margin_trend} over the period; revenue is {rev_dir or 'broadly flat'} overall.",
-            "why": _profit_why(m, sector, econ, products),
-            "affect": _profit_affect(m, sector, prod_df=products),
-            "investigate": _profit_investigate(monthly, products),
-            "options": can_do(sector, "pricing"),
-            "before_after": f"Example: if a supplier raises cost on a $10 item to $10.60 and you keep the price at $10, you lose the sale or the margin. Margin 30% → 21%, impact −9pp.",
-        })
-    elif pillar == "cashflow":
-        base.update({
-            "title": "Cash Flow: Money In vs Money Out",
-            "what": "This shows money actually entering your account (cash in) vs money leaving (cash out), and the resulting bank balance. Profit and cash are different: you can be profitable on paper and still run out of cash.",
-            "changed": f"Cash in moved from {nice(m['cash_in'].iloc[0])} to {nice(m['cash_in'].iloc[-1])}. Cash out moved from {nice(m['cash_out'].iloc[0])} to {nice(m['cash_out'].iloc[-1])}. Your cash balance is now {nice(cash['closing'])}.",
-            "margin": f"You currently hold about {cash['months_of_cash']} months of cash cover.",
-            "trend": f"Your cash balance is {cash['trend']}. Stock, debtors and purchases all consume cash before it returns as sales.",
-            "why": [], "affect": [], "investigate": [], "options": can_do(sector, "cash_stock"),
-            "before_after": f"Example: buying a supplier deal that triples stock uses cash now for margin later. $5,000 stock bought in one month can drain $5,000 of cash and add warehouse/insurance cost before it sells.",
-        })
-    elif pillar == "investment":
-        base.update({
-            "title": "Investment: NPV, IRR, Payback, DCF, ROI",
-            "what": "This analyses whether spending money today (expansion, equipment, stock) will return more than the same money kept in the bank, once time and inflation are considered.",
-            "changed": "" ,
-            "margin": "",
-            "trend": "",
-            "why": [],
-            "affect": [],
-            "investigate": [],
-            "options": ["Compare the project return against the bank rate and inflation before committing.",
-                        "Model a base case, a good case and a bad case - never decide on the base case alone."],
-            "before_after": "",
-        })
-    elif pillar == "risk":
-        base.update({
-            "title": "Risk & Stress Testing: What Could Go Wrong?",
-            "what": "This stress-tests your revenue and costs if inflation, the exchange rate, interest rates or prices move against you, and if your own revenue or costs shift by 10-30%.",
-            "changed": f"Your revenue is currently {nice(rev1)}/month with {nice(cost1)}/month of costs, giving {nice(prof1)}/month of profit. A 15% cost jump removes roughly {_to_money(prof1 - prof1 / 1.15)} of monthly profit.",
-            "margin": "",
-            "trend": "",
-            "why": [], "affect": [], "investigate": [],
-            "options": can_do(sector, "resilience"),
-            "before_after": f"Example: Inventory costing $5,000 after a supplier increase becomes $5,700. If selling prices do not move, your expected margin drops from 30% to 21%.",
-        })
-    elif pillar == "optimization":
-        base.update({
-            "title": "Optimization: Best Use of Your Money",
-            "what": "This shows your resources (cash, stock, staff, vehicles), the alternatives for using them, the constraints around you, and the recommended allocation.",
-            "changed": f"Right now about {nice(sum(monthly['inventory'].tolist()))} sits in stock, {nice(cash['closing'])} in cash, and {nice(cost1)}/month goes to costs.",
-            "margin": "",
-            "trend": "",
-            "why": [], "affect": [], "investigate": [],
-            "options": [
-                "Allocate by margin per dollar, not by habit: which product earns the most profit per $ invested.",
-                "Cap stock days on shelf, keep a cash buffer, and fund one growth area deliberately.",
-            ],
-            "before_after": f"Example: shifting $1,000 from slow-moving stock into your best-margin fast mover can lift monthly profit by {_to_money(max(0, m['profit'].sum()) * 0.03)} at unchanged revenue.",
-        })
-    return base
+    expl["speak"] = speak_text(expl)
+    return expl
 
 
-def _profit_why(m, sector, econ, products) -> list:
+def _dimension(t: str) -> str:
+    return {"profitability": "pricing", "cashflow": "cash_stock",
+            "investment": "diversify", "risk": "resilience",
+            "optimization": "cash_stock"}.get(t, "pricing")
+
+
+# --- section builders ------------------------------------------------------
+def _what(t, m, margin1):
+    labels = {
+        "profitability": ("This graph shows monthly revenue against the cost of running the business, "
+                          "and the profit that remains after all costs. It reveals which driving force moves your bottom line."),
+        "cashflow": ("This graph shows money entering (cash in), money leaving (cash out), and the resulting "
+                     "bank balance each month. Profit and cash are different: you can be profitable on paper and still run out of cash."),
+        "investment": ("This graph analyses whether spending capital today (expansion, equipment, stock) returns more "
+                       "than keeping the same money in the bank, after inflation and time value are considered. "
+                       "It is measured with Net Present Value (NPV), Internal Rate of Return (IRR), Payback period, "
+                       "Discounted Cash Flow (DCF) and Modified IRR (MIRR) - each one translates one idea: does the project repay its capital."),
+        "risk": ("This graph stress-tests your data: if revenue falls or costs rise by 10-30%, and if inflation, "
+                 "exchange rates, interest rates or fuel move against you, how much profit is at risk in a bad month."),
+        "optimization": ("This graph shows your limited resources (cash, stock, staff, vehicles), the alternative uses "
+                         "for them, the constraints around you, and the allocation that an optimisation model recommends."),
+    }
+    return labels[t]
+
+
+def _changed(t, m, rev0, rev1, cost0, cost1, prof0, prof1, margin0, margin1, liq):
+    if t == "profitability":
+        return (f"Revenue changed from {_num(rev0)} to {_num(rev1)} ({pct(growth(m, 'revenue'))}). "
+                f"Costs changed from {_num(cost0)} to {_num(cost1)}. Net profit changed from {_num(prof0)} to {_num(prof1)}.")
+    if t == "cashflow":
+        return (f"Cash in moved from {_num(m['cash_in'].iloc[0])} to {_num(m['cash_in'].iloc[-1])}. "
+                f"Cash out moved from {_num(m['cash_out'].iloc[0])} to {_num(m['cash_out'].iloc[-1])}. "
+                f"Closing cash balance is {_num(liq['closing'])}.")
+    if t == "investment":
+        return (f"Average monthly profit available to reinvest is {_num(m['profit'].mean())}. "
+                f"Closing cash of {_num(liq['closing'])} could fund expansion, repay debt, or stay as a buffer.")
+    if t == "risk":
+        return (f"Revenue today is {_num(rev1)}/month and costs are {_num(cost1)}/month, leaving {_num(prof1)}/month "
+                f"of profit. At today's figures a 15% cost jump removes roughly {_num(prof1 - prof1 / 1.15)} of monthly profit.")
+    return (f"About {_num(m['inventory'].iloc[-1])} sits in stock, {_num(liq['closing'])} in cash, "
+            f"and {_num(cost1)}/month goes to costs. Margins average {margin1:.1f}% across product lines.")
+
+
+def _trend(t, m, g_rev, g_prof, margin1):
+    if t == "profitability":
+        d = consecutive_dir(m["profit"], lookback=5)
+        d_txt = (f"{d} consecutive months declining" if d == "down" else
+                 (f"{d} consecutive months rising" if d == "up" else "broadly flat"))
+        return (f"Profit is trending {trend(m['profit'])}. Revenue is {trend(m['revenue'])}. "
+                f"Profit margin sits at {margin1:.1f}% - the key number to protect.")
+    if t == "cashflow":
+        cash_t = trend(m['cash_balance'])
+        return (f"Cash balance is {cash_t}. "
+                f"You currently hold near {liquidity(m)['months_of_cash']} months of cash cover.")
+    if t == "investment":
+        fc = forecast(m, "profit", 3)
+        return (f"Modelled 3-month profit outlook: {', '.join(_num(v) for v in fc)}. "
+                f"Invest only if the modelled return clears the bank rate plus inflation.")
+    if t == "risk":
+        return (f"Monthly profit volatility is meaningful (std {max(0.0, ((m['profit'] - m['profit'].mean()) ** 2).mean() ** 0.5):,.0f}). "
+                f"A downturn therefore needs a defined response, not a guess.")
+    return (f"Stock is trending {trend(m['inventory'])} while profit is {trend(m['profit'])}. "
+            f"That gap is where cash gets trapped.")
+
+
+def _why(t, m, sector, econ, products) -> list:
     lines = []
-    rev_t = trend(m["revenue"]); cost_t = trend(m["costs"]); prof_t = trend(m["profit"])
+    infl = econ.get("inflation")
+    rev_t, cost_t, prof_t = trend(m["revenue"]), trend(m["costs"]), trend(m["profit"])
     if prof_t == "falling":
-        lines.append(f"Profit has fallen even though costs moved {cost_t} and revenue is {rev_t}. When cost growth outruns price growth, every sale earns less.")
+        lines.append(f"Profit fell while costs moved {cost_t} and revenue is {rev_t}. "
+                     "When cost growth outruns price growth, every sale earns less.")
     elif rev_t == "rising" and cost_t == "rising":
-        lines.append("Sales are rising, but costs rising faster is the classic squeeze: you are working harder for the same or less profit.")
-    lines.append(macro_context_line(sector, econ))
-    if econ and econ.get("inflation") is not None:
-        lines.append(f"Inflation around {econ['inflation']:.1f}% pushes supplier prices up, which pushes your prices up, which can push customers away.")
+        lines.append("Sales rose, but costs rose faster - the classic squeeze: working harder for the same or less profit.")
+    if infl is not None:
+        lines.append(f"Inflation around {infl:.1f}% pushes supplier prices up, which pushes your prices up, "
+                     "which can push price-sensitive customers away.")
+    lines.append(macro_context_line(sector, econ or None))
     season = _season_hint(m)
     if season:
         lines.append(season)
+    if products is not None and not products.empty and "Margin %" in products:
+        worst = products.sort_values("Margin %").iloc[0]
+        lines.append(f"The thinnest line is '{worst['Product']}' at {worst['Margin %']:.1f}% margin - "
+                     "little buffer against supplier increases there.")
     return lines
+
+
+def _affect(t, m, sector, products, prof1, liq) -> str:
+    if t == "cashflow":
+        return (f"The main effect is cash conversion: stock bought ahead and debtors tie cash before it returns as sales. "
+                f"With {liquidity(m)['months_of_cash']} months of cover, a single missed season has limited protection.")
+    if t == "investment":
+        return ("Capital spent today is unavailable for two weeks of fuel, a supplier deal or a staff payroll lean month. "
+                "The offset is only justified if the modelled return beats keeping the money working in the business.")
+    if t == "risk":
+        return (f"A {_num(abs(prof1 - prof1 / 1.15))}/month swing is the difference between a healthy month "
+                "and a painful one. Pre-arranged cost cuts are the cheapest insurance.")
+    if t == "optimization":
+        return ("Misallocated cash slows the business: slow stock earns nothing, idle cash earns nothing after inflation, "
+                "and every $ in fast-moving margin lines earns more.")
+    return ("The core effect is margin pressure: if costs rise faster than prices, more activity converts "
+            "into less usable profit, and cash for the owner shrinks.")
+
+
+def _investigate(t, m, products) -> list:
+    qs = []
+    if t == "profitability":
+        rev_t = trend(m["revenue"])
+        qs.append("Are fewer customers coming, or are they buying less? Different fixes follow.")
+        if products is not None and not products.empty and "Status" in products:
+            slow = products[products["Status"] == "Slow"]
+            if len(slow):
+                qs.append(f"Inspect the {len(slow)} slow-moving lines - how much cash sits on those shelves?")
+        qs.append("Compare your prices against the market before holding or raising them.")
+    elif t == "cashflow":
+        qs.append("Which purchases sit longest before converting to cash? Rank stock days for every line.")
+        qs.append("Are suppliers' terms being used, or is cash leaving before stock sells?")
+    elif t == "investment":
+        qs.append("What is the worst realistic case for new revenue, and what breaks at that point?")
+        qs.append("Does the return beat the bank rate plus inflation after costs and taxes?")
+    elif t == "risk":
+        qs.append("Which single line would hurt most if its cost rose 15%? Fix that first.")
+        qs.append("Do you have a pre-agreed response for a 20% revenue drop?")
+    else:
+        qs.append("Rank every line by margin per dollar of capital, not by habit.")
+        qs.append("What stops the business from reallocating cash to the best-margin line this month?")
+    return qs
+
+
+def _before_after(t, m, prof1) -> str:
+    if t == "risk":
+        return ("BEFORE/AFTER: Inventory cost $5,000 -> $5,700 after a supplier increase. Expected margin 30% -> 21%. "
+                "Impact: about -9 percentage points (pp), before any defensive price action.")
+    if t == "profitability":
+        return ("BEFORE/AFTER: a $10 item whose supplier cost rises to $11, priced flat, moves its margin "
+                "from 28% to 18% - roughly -10pp of profit on every sale.")
+    if t == "cashflow":
+        return ("BEFORE/AFTER: one bulk-buy of $5,000 stock drains cash now for margin later; if that stock "
+                "turns in 4 months, your cash is tied for 4 months before it returns as sales.")
+    if t == "investment":
+        return ("BEFORE/AFTER: a project returning 6% nominal while inflation runs higher effectively loses "
+                "value; the same cash in fast-moving stock at 20%+ margin works harder.")
+    return ("BEFORE/AFTER: moving $1,000 from a slow line into the best-margin fast mover can lift monthly "
+            "profit materially at unchanged revenue.")
 
 
 def _season_hint(m) -> str | None:
     if "month_num" not in m.columns:
         return None
     peak = m.loc[m["month_num"].isin([11, 12])]
-    if len(peak):
+    rest = m.loc[~m["month_num"].isin([11, 12])]
+    if len(peak) and len(rest):
         hi = peak["revenue"].mean()
-        rest = m.loc[~m["month_num"].isin([11, 12])]["revenue"].mean()
-        if hi and rest and hi > rest * 1.12:
-            return f"Your sales peak late in the year (Dec festive period: +{((hi/rest)-1)*100:.0f}% vs other months). Plan stock and staff around it."
+        lo = rest["revenue"].mean()
+        if hi and lo and hi > lo * 1.12:
+            return (f"Sales concentrate late in the year (festive period +{((hi/lo)-1)*100:.0f}% vs other months). "
+                    "Plan stock, staff and cash around that window.")
     return None
 
 
-def _profit_affect(m, sector, prod_df) -> list:
-    lines = [f"The core effect: your cash conversion is at risk. More activity may be turning into less usable profit."]
-    if not prod_df.empty and sector != "General":
-        worst = prod_df.sort_values("Profit Margin %").iloc[0]
-        lines.append(f"Your thinnest line is '{worst['Product']}' at {worst['Profit Margin %']}% margin - every sale there adds little buffer against inflation.")
-    return lines
+def render(st, expl: dict, lang: str = "en"):
+    """Render the mandated explanation sections under a chart."""
+    st.markdown(f"#### 🤖 WHAT AM I LOOKING AT?\n{expl['what']}")
+    st.markdown(f"**WHAT CHANGED?**  \n{expl['changed']}")
+    st.markdown(f"**WHAT IS THE TREND?**  \n{expl['trend']}")
+    st.markdown(f"**WHY COULD THIS BE HAPPENING?**")
+    for line in expl["why"]:
+        st.markdown(f"- {line}")
+    st.markdown(f"**HOW DOES IT AFFECT THE BUSINESS?**  \n{expl['affect']}")
+    st.markdown(f"**WHAT SHOULD I INVESTIGATE?**")
+    for q in expl["investigate"]:
+        st.markdown(f"- {q}")
+    st.markdown(f"**WHAT CAN I DO?**")
+    for o in expl["can_do"]:
+        st.markdown(f"- {o}")
+    st.markdown(f"**BEFORE/AFTER**  \n{expl['before_after']}")
+    st.markdown("**CAUSE-AND-EFFECT CHAIN**")
+    st.markdown(f"`{expl['chain']}`")
+    st.markdown(f"**CONNECTION TO THE ZIMBABWE ECONOMY**  \n{expl['macro']}")
 
 
-def _profit_investigate(monthly, products) -> list:
-    qs = []
-    rev_t = trend(monthly["revenue"])
-    if rev_t == "falling":
-        qs.append("Are fewer customers coming, or are they buying less? Different fixes follow.")
-    elif rev_t == "rising":
-        qs.append("Is growth coming from more customers or higher prices? Price-led growth can reverse quickly.")
-    if not products.empty:
-        try:
-            slow = products[products["Fast/Slow Moving"].str.contains("Slow")]
-            if len(slow):
-                qs.append(f"Check top {len(slow)} slow-moving lines - how much cash is sitting on those shelves?")
-        except Exception:
-            pass
-    qs.append("Compare your prices against the market before raising them or holding them.")
-    return qs
-
-
-def render(st, lang: str, expl: dict, key_prefix: str):
-    """Render the explanation sections under a chart in the mandated structure."""
-    s = expl
-    st.markdown(f"### 🤖 What this chart is telling you")
-    st.markdown(f"**WHAT AM I LOOKING AT?**  \n{s.get('what') or expl.get('title')}")
-    for frag in s.get("chain", []):
-        st.markdown(f"• {frag}")
-    if s.get("why"):
-        st.markdown("**WHY COULD THIS BE HAPPENING?**")
-        for line in s["why"]:
-            st.markdown(f"• {line}")
-    st.markdown(f"**HOW DOES IT AFFECT THE BUSINESS?**  \n{(s.get('affect') and s['affect'][0]) or ''}")
-    if s.get("investigate"):
-        st.markdown("**WHAT SHOULD I INVESTIGATE?**")
-        for q in s["investigate"]:
-            st.markdown(f"• {q}")
-    st.markdown("**WHAT CAN YOU DO?**  \n" + "".join(f"• {o}  \n" for o in s["options"]))
-    if s.get("before_after"):
-        st.markdown(f"**QUICK EXAMPLE**  \n{s['before_after']}")
-    if s.get("macro"):
-        st.markdown(f"**CONNECTION TO THE ZIMBABWE ECONOMY**  \n{s['macro']}")
+def speak_text(expl: dict) -> str:
+    """Concise spoken version of the explanation for window.speechSynthesis."""
+    parts = [expl["what"], expl["changed"], expl["trend"]]
+    for w in expl["why"][:2]:
+        parts.append(w)
+    parts.append(expl["affect"])
+    parts.append("What can you do? " + "; ".join(expl["can_do"][:2]))
+    parts.append(expl["before_after"])
+    return " ".join(parts)

@@ -1,221 +1,212 @@
-"""RFC SECURITIES - main entry point.
+"""RFC SECURITIES - Turn Uncertainty Into Profitability. Model. Predict. Optimize.
 
-Turn Uncertainty Into Profitability.  Model. Predict. Optimize.
+Single-page Streamlit app: login with a robotic (speechSynthesis) welcome,
+cinematic 5-pillar dashboard, business-data upload or demo data, live news,
+a bottom CNN-style FX ticker and a Simple Business Management Report with a
+"Download PDF" button plus WhatsApp/Gmail delivery.
 
-Login → robotic welcome → dashboard:
-  - no data? cinematic 5-pillar carousel
-  - data loaded? uploaded-product table view + metrics, then pages deep-dive
-Always shows live FX ticker, footer, and the global sidebar.
+ADVANTAGES (implemented in this build):
+  - Only tool that reads the graph, understands the trend, connects it to the
+    Zimbabwe economy, explains it in plain professional English and quantifies
+    the impact on the specific business.
+  - Sector-specific real Zimbabwe data (fuel, tolls, ZERA, ZINARA, ZIMRA duty,
+    POTRAZ IMEI, Agrishow, fertiliser prices, OK/TM price war).
+  - Live current news with date, author and full article on click, rss2json
+    fallback, 10-minute cache.
+  - Live FX ticker with clearly-labelled offline sample mode.
+  - Cinematic pillar pictures (Ken Burns) expanding into Bloomberg-style
+    Plotly charts with hover tooltips and a 3M/6M/12M selector.
+  - Uploaded products, prices and margins visible with Fast/Slow status.
+  - Regional sourcing engine (Zim vs SA landed cost: FX, transport, duty,
+    clearing, storage) via the SA-import flags and supplier-cost modelling.
+  - Seasonal intelligence: what to stock and when; holding-risk and
+    break-even reasoning; never treats an assumption as fact.
+  - Never fabricates live data: every live line shows source + timestamp -
+    otherwise DATA UNAVAILABLE/STALE.
+  - Never guarantees profit: advice uses "potentially viable", "under
+    assumptions", "requires validation", "market evidence indicates".
+  - WhatsApp/Gmail report delivery, English/Shona/Ndebele, robotic welcome.
+
+LIMITATIONS (see README.md):
+  - Requires an accurate Excel/CSV upload.
+  - Live news and FX need internet; RBZ/ZIMRA APIs can be down.
+  - Not a replacement for a chartered accountant, auditor or lawyer.
+  - Shona/Ndebele translation is ongoing; USSD feature-phone access is on the
+    roadmap; seasonal forecasts improve with more historical data; a black-swan
+    event cannot be predicted.
 """
 from __future__ import annotations
 
-# --- path bootstrap: makes our modules importable (plain names) regardless of
-# where the app is placed or run from (local, Streamlit Cloud, subfolder, ...).
-# Both the app root and the `utils/` folder are put on sys.path, so the app
-# works even if Python package resolution of `utils` is shadowed or the folder
-# was extracted flat. ----------------------------------------------------------
 import os
-import sys as _sys
+import sys
 
-_APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-if os.path.basename(_APP_ROOT) == "pages":
-    _APP_ROOT = os.path.dirname(_APP_ROOT)
-_APP_UTILS = os.path.join(_APP_ROOT, "utils")
-for _cand in (_APP_UTILS, _APP_ROOT):
-    if _cand not in _sys.path:
-        _sys.path.insert(0, _cand)
-del _APP_ROOT, _APP_UTILS, _cand
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+# --- import bootstrap (works on Streamlit Cloud without repo layout tricks) ---
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+for _p in (_ROOT, os.path.join(_ROOT, "utils")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import streamlit as st
 
-st.set_page_config(page_title="RFC Securities", page_icon="📈",
-                   layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="RFC SECURITIES", page_icon="📈", layout="wide",
+                   initial_sidebar_state="expanded")
 
-try:
-    from translations import t
-    from ui import (inject_css, page_guard, render_carousel, render_footer,
-                    render_global_sidebar, render_login, render_report_view,
-                    render_ticker, get_bundle, _load_macro, welcome_audio_html)
-except ModuleNotFoundError as _e:
-    st.error(
-        "❌ Could not import the app's modules. The `utils/` folder (with files "
-        f"like `ui.py`, `translations.py`) was not found next to app.py. Reason: {_e}")
+from assets_gen import ensure_assets
+from data_loader import load_demo_data
+from fx_ticker import get_fx_rates
+from news_tracker import fetch_live_news, quick_news, spawn_bg_refresh
+from ui import (inject_css, init_state, render_cinematic, render_footer,
+                render_login, render_news, render_sidebar, render_ticker,
+                render_upload_view, render_welcome, _make_report)
+
+DARK = {"paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
+        "font": {"color": "#F2EDE4"}, "hoverlabel": {"bgcolor": "#0B3D2E"}}
+
+
+def main():
+    init_state()
+    assets = ensure_assets()
+
+    if not st.session_state["authenticated"]:
+        render_login(st.session_state["lang"], assets["sunset"])
+        render_footer()
+        st.stop()
+
+    fx = get_fx_rates()
+    st.session_state["fx"] = fx
+    render_ticker(fx)
+
+    if st.session_state.get("play_welcome") and not st.session_state.get("welcome_triggered"):
+        st.session_state["welcome_triggered"] = True
+        render_welcome()
+
+    render_sidebar(assets)
+
+    _brand_header(assets)
+
+    if st.session_state.get("show_report"):
+        _report_view()
+
+    _dashboard(assets)
+    _news_section()
+    render_footer()
+
+
+def _brand_header(assets):
+    import base64
+    logo = base64.b64encode(open(assets["logo"], "rb").read()).decode()
     st.markdown(
-        "**Fix on Streamlit Cloud / your deployment:** make sure the repository contains "
-        "the three folders `pages/`, `utils/` and `.streamlit/` beside `app.py`, commit "
-        "them (do **not** gitignore them), then redeploy. If you uploaded files one by one, "
-        "upload the `utils/` folder contents as well.")
-    st.stop()
-
-inject_css()
-lang = st.session_state.get("lang", "en")
-if not st.session_state.get("authenticated"):
-    render_login(lang)
-    st.stop()
-page_guard()
-
-lang = st.session_state["lang"]
-macro = _load_macro()
-
-# ---------------- Robotic welcome (autoplay once right after login) ---------
-WELCOME_TEXT = (
-    "Welcome to RFC Securities. We turn business uncertainty into financial clarity. "
-    "RFC Securities helps startups, SMEs and organisations understand profitability, cash flow, "
-    "investment opportunities, risks and the best way to allocate their money. We analyse your "
-    "business data together with current Zimbabwe market conditions, exchange rates, inflation, "
-    "interest rates, government programmes, seasonal demand and market opportunities. We then "
-    "explain the results in simple language, identify potential opportunities and risks, and "
-    "provide practical financial insights to help you make informed business decisions. You can "
-    "receive your complete report through WhatsApp or Gmail. Welcome to RFC Securities - Turn "
-    "Uncertainty Into Profitability.")
-if st.session_state.get("play_welcome"):
-    html, _ = welcome_audio_html(lang)
-    if html and not st.session_state.get("muted"):
-        st.markdown(html, unsafe_allow_html=True)
-    st.session_state["play_welcome"] = False
-
-_wc, _ws = st.columns([6, 4])
-with _ws:
-    c1, c2, c3 = st.columns(3)
-    if c1.button("🔊 Replay welcome", use_container_width=True, key="wa_replay"):
-        html, _ = welcome_audio_html(lang)
-        if html:
-            st.markdown(html, unsafe_allow_html=True)
-    if c2.button(t(lang, "btn_mute") if not st.session_state.get("muted")
-                 else t(lang, "btn_unmute"), use_container_width=True, key="wa_mute"):
-        st.session_state["muted"] = not st.session_state.get("muted")
-        if not st.session_state["muted"]:
-            html, _ = welcome_audio_html(lang)
-            if html:
-                st.markdown(html, unsafe_allow_html=True)
-        st.rerun()
-    sub_label = t(lang, "btn_subtitles") if not st.session_state.get("subtitles") \
-        else t(lang, "btn_no_subtitles")
-    if c3.button(sub_label, use_container_width=True, key="wa_sub"):
-        st.session_state["subtitles"] = not st.session_state.get("subtitles")
-        st.rerun()
-    if st.session_state.get("subtitles"):
-        st.caption("🔉 " + WELCOME_TEXT[:300] + "...")
-
-# ---------------- Sidebar ----------------------------------------------------
-render_global_sidebar()
-render_ticker(macro)
-
-lang = st.session_state["lang"]
-bundle = get_bundle()
-
-# ---------------- Main area ---------------------------------------------------
-cols = st.columns([1, 4, 1])
-with cols[1]:
-    st.markdown(
-        '<div class="brand" style="justify-content:center; margin:18px 0 4px 0;">'
-        '<div class="logo-badge">RFC <span class="logo-arrow">▲</span></div>'
-        '<span style="font-size:2rem; font-weight:900; letter-spacing:3px; color:var(--rfc-gold);">'
-        'RFC&nbsp;SECURITIES</span></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div style="text-align:center; color:var(--rfc-cream); font-weight:600;">'
-        'Turn Uncertainty Into Profitability.</div>'
-        '<div style="text-align:center; color:var(--rfc-gold); letter-spacing:5px; font-size:.85rem; '
-        'margin-bottom:22px;">MODEL &nbsp;•&nbsp; PREDICT &nbsp;•&nbsp; OPTIMIZE</div>',
+        f'<div class="brand" style="margin-bottom:6px;">'
+        f'<img src="data:image/png;base64,{logo}" style="width:42px;height:42px;border-radius:12px;">'
+        f'<div><div style="color:#C9A227;font-weight:900;letter-spacing:1px;font-size:1.2rem;">RFC SECURITIES</div>'
+        f'<div style="color:#F2EDE4;opacity:.8;font-size:.82rem;">'
+        f'Turn Uncertainty Into Profitability. · Model. Predict. Optimize.</div></div></div>',
         unsafe_allow_html=True)
 
-render_report_view()
 
-if bundle is None:
-    # ---------------- Clean empty state: cinematic carousel
-    st.markdown(
-        f'<div style="text-align:center; margin:6px 0 14px 0; color:var(--rfc-cream);">'
-        f'<span style="background:#0E4A37; border:1px solid #C9A227; padding:6px 16px; border-radius:999px;">'
-        f'📂 Upload your data on the left, or pick a demo business — then the 5 pillars unlock '
-        f'in the pages menu.</span></div>', unsafe_allow_html=True)
-    render_carousel()
-else:
-    # ---------------- Data loaded: product view + quick dashboard
-    src = st.session_state.get("source")
-    name = bundle["business"].name
-    sector = bundle["business"].sector
-    if src == "upload":
-        label = t(lang, "data_status_real")
-    else:
-        label = t(lang, "data_status_demo")
-    st.markdown(
-        f'<div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">'
-        f'<span style="background:#0E4A37;border:1px solid #C9A227;padding:6px 14px;border-radius:999px;">'
-        f'🏢 {name} &nbsp;|&nbsp; {sector}</span>'
-        f'<span style="background:#0E4A37;border:1px solid #3f7a63;padding:6px 14px;border-radius:999px;">{label}</span>'
-        f'</div>', unsafe_allow_html=True)
-
-    m = bundle["monthly"]
-    last, prev = m.iloc[-1], (m.iloc[-2] if len(m) > 1 else m.iloc[-1])
-    from analysis import growth, nice
-
-    d1, d2, d3 = st.columns(3)
-    d1.metric(t(lang, "metric_revenue"), nice(last["revenue"]),
-              f"{growth(m,'revenue',2):+.1f}% vs last month")
-    d2.metric(t(lang, "metric_profit"), nice(last["profit"]),
-              f"{growth(m,'profit',2):+.1f}% vs last month")
-    d3.metric(t(lang, "metric_cash"), nice(last["cash_balance"]),
-              f"{growth(m,'cash_balance',2):+.1f}% vs last month")
-    d4, d5 = st.columns(2)
-    d4.metric(t(lang, "metric_stock"), nice(last["inventory"]),
-              f"{growth(m,'inventory',2):+.1f}% vs last month")
-    d5.metric("Products", f"{len(bundle['products'])}",
-              f"Sector: {sector}")
-
+def _report_view():
+    rep = st.session_state.get("report")
+    if not rep:
+        return
+    st.markdown("## 📄 SIMPLE BUSINESS MANAGEMENT REPORT")
+    st.caption(f"Business: <b>{rep['business_name']}</b> · Period: {rep['period']} · RFC SECURITIES",
+               unsafe_allow_html=True)
+    for line in rep["lines"]:
+        if line.startswith("#TITLE "):
+            st.markdown(f"### {_md(line[7:])}")
+        elif line.startswith("#H "):
+            st.markdown(f"#### {_md(line[3:])}")
+        else:
+            st.markdown(_md(line))
+    c1, c2, c3 = st.columns(3)
+    c1.download_button("⬇ Download PDF", rep["pdf_bytes"],
+                       file_name="rfc_securities_report.pdf", mime="application/pdf")
+    if c2.button("WhatsApp Send"):
+        from urllib.parse import quote
+        url = f"https://wa.me/263777479118?text={quote(rep['text'][:3500], safe='')}"
+        c2.markdown(f'<a href="{url}" target="_blank" style="color:#C9A227;">Open WhatsApp ➜</a>',
+                    unsafe_allow_html=True)
+    if c3.button("Gmail Send"):
+        from urllib.parse import quote
+        subj = quote(f"RFC Securities Report - {rep['business_name']}")
+        body = quote(rep["text"][:25000], safe="")
+        c3.markdown(f'<a href="mailto:chidanyikaroselyn@gmail.com?subject={subj}&body={body}" '
+                    f'style="color:#C9A227;">Open Gmail ➜</a>', unsafe_allow_html=True)
+    if st.button("✖ CLOSE REPORT"):
+        st.session_state["show_report"] = False
+        inject_css()
+        import streamlit as _s
+        _s.rerun()
     st.markdown("---")
-    st.subheader("🧾 Your data - products, prices, margins")
-    if not bundle["products"].empty:
-        st.dataframe(bundle["products"], width="stretch", hide_index=True)
+
+
+def _md(s: str) -> str:
+    return s.replace("_" * 50, "")
+
+
+def _dashboard(assets):
+    bundle = st.session_state.get("bundle")
+    source = st.session_state.get("source")
+
+    if bundle is None:
+        illust = load_demo_data("General SME")
+        st.session_state["_illust"] = illust
+        render_cinematic(assets, illust, _macro(), "General", st.session_state["lang"])
+        st.info("Choose a demo business or upload your own data from the left panel "
+                "to see these pillars powered by YOUR numbers.", icon="💡")
+        return
+
+    data = bundle
+    econ = _macro()
+    sector = bundle["sector"]
+    if source == "upload" and not st.session_state.get("back_cinematic"):
+        st.markdown(f"### 📊 {bundle['name']} — Uploaded Data")
+        st.caption("Margin% = (Price - Cost) / Price × 100 · Status: Fast if margin > 25%, else Slow. "
+                   "This table feeds the cinematic charts and the report below.")
+        render_upload_view(bundle)
+        if st.button("🎬 Back to Cinematic View", width="stretch"):
+            st.session_state["back_cinematic"] = True
+            st.rerun()
+        return
+
+    if st.session_state.get("back_cinematic") and bundle is not None:
+        if st.button("📊 Show Uploaded Data Table"):
+            st.session_state["back_cinematic"] = False
+            st.rerun()
+    banner = "DEMO data — upload your own from the left panel." if bundle.get("is_demo") \
+        else "YOUR uploaded data — used live across every chart."
+    st.info(f"🟢 {banner}", icon="📈")
+    render_cinematic(assets, data, econ, sector, st.session_state["lang"])
+
+
+def _news_section():
+    bundle = st.session_state.get("bundle")
+    sector = bundle["sector"] if bundle else None
+    force = bool(st.session_state.get("refresh_clicked"))
+    if force:
+        try:
+            with st.spinner(t(st.session_state["lang"], "news_loading")):
+                news = fetch_live_news(force=True)
+        except Exception:
+            news = {"items": [], "last_checked": "unavailable", "sources_checked": 0,
+                    "sources_list": [], "live": False}
+        st.session_state["refresh_clicked"] = False
     else:
-        st.caption("No product-level file; monthly aggregates shown in pages.")
-    if st.button(t(lang, "back_to_cinematic"), width="content"):
-        st.session_state["cinematic"] = True
-        st.rerun()
-    if st.session_state.get("cinematic"):
-        st.session_state["cinematic"] = False
-        st.markdown("You can return to the 5-pillar view anytime from this button.")
+        news = quick_news()
+        spawn_bg_refresh()
+    if sector:
+        from news_tracker import filter_by_sector
+        news = dict(news, items=filter_by_sector(news.get("items", []), sector))
+    render_news(news, bundle, st.session_state["lang"])
 
-    st.markdown("---")
-    st.markdown(
-        "**Next step:** open the pages in the left-hand menu — **📊 Profitability**, **💧 Cash Flow**, "
-        "**🏗 Investment**, **⛈ Risk**, **⚙ Optimization** — every graph comes with a plain-English "
-        "🤖 EXPLAIN THIS section that connects your numbers to the Zimbabwe economy.")
 
-# ---------------- Live news section -----------------------------------------
-st.markdown("---")
-st.subheader("📰 LIVE ZIMBABWE BUSINESS & POLICY NEWS")
-sector_filter = st.session_state.get("sector_filter", "All sectors")
-from ui import _load_news
-news = _load_news(sector_filter)
-if news.get("live"):
-    st.caption(f"LIVE • Last checked: {news['last_checked']} • Sources checked: "
-               f"{news['sources_checked']} verified • Filter: {sector_filter}")
-else:
-    st.caption("DATA UNAVAILABLE/STALE - attempting reconnect next refresh (every 10 min).")
-if news.get("items"):
-    for it in news["items"][:10]:
-        badge = {"High": "🔴 High", "Medium": "🟠 Medium", "Low": "🟢 Low"}.get(it.get("sector-score-tag") or
-                 ("High" if it.get("score", 0) >= 2 else ("Medium" if it.get("score", 0) == 1 else "Low")), "🟢 Low")
-        with st.expander(f"{it['headline']}", expanded=False):
-            st.markdown(f"**{it.get('date') or '(date not listed)'}** • {it.get('author','')} • "
-                        f"{badge} impact for SMEs")
-            if it.get("summary"):
-                st.markdown(it["summary"])
-            if it.get("content"):
-                st.markdown(f"> {it['content'][:600]}")
-            st.markdown(f"[Open original article ↗]({it['link']})")
-            st.markdown("**Business Impact Analysis:**")
-            st.markdown(f"- **What happened?** {it['headline']}")
-            st.markdown("- **Why it matters:** Your business operates adjacent to this news; it can move costs, demand or policy.")
-            st.markdown("- **What you can consider:** Review prices, stock timing, and diversify sales channels this week.")
-else:
-    st.info("No feed items available right now (sources may be unreachable). Refreshing automatically every 10 minutes.")
+def _macro():
+    fx = st.session_state.get("fx")
+    if fx is None:
+        fx = get_fx_rates()
+        st.session_state["fx"] = fx
+    return fx.get("macro", {})
 
-# ---------------- Footer -------------------------------------------------------
-render_footer()
+
+if __name__ == "__main__":
+    main()
